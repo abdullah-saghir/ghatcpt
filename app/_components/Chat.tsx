@@ -168,7 +168,7 @@ export default function Chat() {
           )}
 
           {loading && (
-            <p className="mt-6 animate-pulse text-sm text-[var(--muted)]">GHATCPT is judging you...</p>
+            <p className="mt-6 animate-pulse text-sm text-[var(--muted)]">GHATCPT is judging your question (and your dependence on AI)...</p>
           )}
 
           {error && (
