@@ -1,6 +1,6 @@
 "use client";
 
-// The main chat screen: messages, input, loading/error states, and new chat.
+// The main chat screen: messages, input, loading/error states, water stats, and new chat.
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { ChatMessage, GhatReply, ReplyKind } from "@/lib/ghatcpt";
@@ -9,6 +9,19 @@ import Tally from "./Tally";
 // Must match the server limits in lib/ghatcpt.ts (the server is the real check).
 const MAX_CHARS = 2000;
 const MAX_MESSAGES = 30;
+
+// ---- Water estimate (every number comes from a published source, see README) ----
+// Google (Aug 2025): median Gemini text prompt uses ~0.26 mL of water (on-site cooling only).
+const WATER_ML_PER_PROMPT = 0.26;
+// OpenAI via Axios (Jul 2025): ChatGPT alone receives ~2.5 billion prompts a day.
+const DAILY_PROMPTS = 2_500_000_000;
+const LITRES_PER_DAY = (WATER_ML_PER_PROMPT * DAILY_PROMPTS) / 1000; // 650,000 L
+const LITRES_PER_SECOND = LITRES_PER_DAY / 86_400; // about 7.5 L
+const OLYMPIC_POOL_LITRES = 2_500_000; // 50 m x 25 m x 2 m
+const DAYS_PER_POOL = OLYMPIC_POOL_LITRES / LITRES_PER_DAY; // about 3.8 days
+const WATER_SOURCE_URL = "https://arxiv.org/abs/2508.15734";
+const PROMPTS_SOURCE_URL =
+  "https://techcrunch.com/2025/07/21/chatgpt-users-send-2-5-billion-prompts-a-day/";
 
 type UIMessage =
   | { id: string; role: "user"; text: string }
@@ -108,6 +121,8 @@ export default function Chat() {
   }
 
   const empty = messages.length === 0;
+  const replyCount = messages.filter((m) => m.role === "assistant").length;
+  const waterUsed = replyCount * WATER_ML_PER_PROMPT;
 
   return (
     <div className="flex h-dvh flex-col">
@@ -116,13 +131,26 @@ export default function Chat() {
           <CircleLogo size="sm" />
           <span className="font-semibold tracking-tight">GHATCPT</span>
         </div>
-        <button
-          onClick={newChat}
-          disabled={loading || empty}
-          className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm hover:bg-[var(--surface)] disabled:opacity-40"
-        >
-          New chat
-        </button>
+        <div className="flex items-center gap-3">
+          {replyCount > 0 && (
+            <a
+              href={WATER_SOURCE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Estimate: about 0.26 mL of data center cooling water per AI reply (Google's published figure). Click for the source."
+              className="text-sm text-[var(--muted)] hover:underline"
+            >
+              💧 {waterUsed.toFixed(2)} mL<span className="hidden sm:inline"> wasted by you</span>
+            </a>
+          )}
+          <button
+            onClick={newChat}
+            disabled={loading || empty}
+            className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm hover:bg-[var(--surface)] disabled:opacity-40"
+          >
+            New chat
+          </button>
+        </div>
       </header>
 
       <main className="flex-1 overflow-y-auto">
@@ -157,6 +185,7 @@ export default function Chat() {
       </main>
 
       <footer className="px-4 pb-4">
+        <WaterTicker />
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -187,7 +216,7 @@ export default function Chat() {
           </button>
         </form>
         <p className="mt-2 text-center text-xs text-[var(--muted)]">
-          GHATCPT can be wrong too. Use your brain, that's the whole point.
+          GHATCPT can be wrong too. Use your brain, that&apos;s the whole point.
         </p>
       </footer>
     </div>
@@ -245,7 +274,48 @@ function AssistantReply({ reply }: { reply: GhatReply }) {
         {reply.roast && <p className="italic text-[var(--accent)]">{reply.roast}</p>}
         <p className="whitespace-pre-wrap leading-relaxed">{reply.message}</p>
         {reply.tally > 0 && <Tally count={reply.tally} />}
+        <p className="text-xs leading-relaxed text-[var(--muted)]">
+          💧 You just spent ~5 drops of water making an AI think for you. And you&apos;re not special:
+          people like you send ChatGPT alone 2.5 billion prompts a day. That&apos;s about{" "}
+          {Math.round(LITRES_PER_DAY).toLocaleString("en-US")} litres of water. Every. Single. Day. A full
+          Olympic pool drained every {DAYS_PER_POOL.toFixed(1)} days by people who couldn&apos;t be bothered
+          to think.{" "}
+          <a href={WATER_SOURCE_URL} target="_blank" rel="noopener noreferrer" className="underline">
+            Water source
+          </a>
+          {" · "}
+          <a href={PROMPTS_SOURCE_URL} target="_blank" rel="noopener noreferrer" className="underline">
+            Prompts source
+          </a>
+        </p>
       </div>
     </div>
+  );
+}
+
+// Live counter: water used by ChatGPT prompts worldwide since this page was opened.
+// It lives in its own component so only this line re-renders every second, not the whole chat.
+function WaterTicker() {
+  const [litres, setLitres] = useState(0);
+
+  useEffect(() => {
+    const start = Date.now();
+    const id = setInterval(() => {
+      setLitres(((Date.now() - start) / 1000) * LITRES_PER_SECOND);
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <p
+      className="mx-auto mb-2 w-full max-w-3xl text-center text-xs text-[var(--muted)]"
+      title="Estimate: 2.5 billion daily ChatGPT prompts (OpenAI, 2025) x 0.26 mL per prompt (Google, 2025). Cooling water only, so the real number is higher."
+    >
+      💧 Since you opened this page, lazy people like you have burned through{" "}
+      <span className="font-semibold tabular-nums text-[var(--foreground)]">
+        {litres.toFixed(1)} litres
+      </span>{" "}
+      of water asking ChatGPT alone to think for them.
+    </p>
   );
 }
