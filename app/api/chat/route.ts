@@ -1,5 +1,6 @@
 // POST /api/chat
 // Receives the chat history, asks Gemini for a GHATCPT reply, returns clean JSON.
+// If the main model fails (limit hit, unavailable), it automatically tries the fallback model.
 // The API key never leaves the server.
 
 import { GoogleGenAI } from "@google/genai";
@@ -16,6 +17,9 @@ import {
 } from "@/lib/ghatcpt";
 
 const KINDS: ReplyKind[] = ["challenge", "retry", "reveal", "help"];
+
+// Errors where trying another model won't help (bad request, bad or missing key).
+const NO_FALLBACK_STATUSES = [400, 401, 403];
 
 // Checks that the request body is a safe, reasonable chat history.
 function parseMessages(body: unknown): ChatMessage[] | null {
@@ -52,9 +56,32 @@ function parseReply(raw: string): GhatReply | null {
   }
 }
 
+// One call to one Gemini model. Returns the raw JSON text.
+async function askModel(ai: GoogleGenAI, model: string, input: string): Promise<string> {
+  const interaction = await ai.interactions.create({
+    model,
+    system_instruction: SYSTEM_PROMPT,
+    input,
+    store: false,
+    generation_config: {
+      thinking_level: "low",
+      max_output_tokens: 2048,
+    },
+    response_format: {
+      type: "text",
+      mime_type: "application/json",
+      schema: REPLY_SCHEMA,
+    },
+  });
+  return interaction.output_text ?? "";
+}
+
 export async function POST(request: Request) {
   const apiKey = process.env.GEMINI_API_KEY;
-  const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+  const primary = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+  const fallback = process.env.GEMINI_FALLBACK_MODEL;
+  // Unique list of models to try, in order
+  const models = [...new Set([primary, fallback].filter((m): m is string => Boolean(m)))];
 
   if (!apiKey) {
     return NextResponse.json(
@@ -84,46 +111,33 @@ export async function POST(request: Request) {
     .join("\n\n");
   const input = `Conversation so far:\n\n${transcript}\n\nReply to the latest USER message.`;
 
-  try {
-    const ai = new GoogleGenAI({ apiKey });
-    const interaction = await ai.interactions.create({
-      model,
-      system_instruction: SYSTEM_PROMPT,
-      input,
-      store: false,
-      generation_config: {
-        thinking_level: "low",
-        max_output_tokens: 2048,
-      },
-      response_format: {
-        type: "text",
-        mime_type: "application/json",
-        schema: REPLY_SCHEMA,
-      },
-    });
+  const ai = new GoogleGenAI({ apiKey });
+  let lastStatus: number | undefined;
 
-    const reply = parseReply(interaction.output_text ?? "");
-    if (!reply) {
-      return NextResponse.json(
-        { error: "GHATCPT got confused. Try asking again." },
-        { status: 502 }
-      );
+  for (const model of models) {
+    try {
+      const reply = parseReply(await askModel(ai, model, input));
+      if (reply) return NextResponse.json(reply);
+      // Bad output from this model: try the next one
+      lastStatus = 502;
+      console.error(`Model ${model} returned an invalid reply. Trying next model if any.`);
+    } catch (err: unknown) {
+      const status = (err as { status?: number })?.status;
+      lastStatus = status;
+      // Log only the model and status code, never the conversation or the key.
+      console.error(`Model ${model} failed. Status: ${status ?? "unknown"}`);
+      if (status !== undefined && NO_FALLBACK_STATUSES.includes(status)) break;
     }
-    return NextResponse.json(reply);
-  } catch (err: unknown) {
-    const status = (err as { status?: number })?.status;
-    // Log only the status code, never the conversation or the key.
-    console.error("Gemini request failed. Status:", status ?? "unknown");
+  }
 
-    if (status === 429) {
-      return NextResponse.json(
-        { error: "GHATCPT is out of breath (free tier limit). Try again in a minute." },
-        { status: 429 }
-      );
-    }
+  if (lastStatus === 429) {
     return NextResponse.json(
-      { error: "The AI service had a problem. Try again." },
-      { status: 502 }
+      { error: "GHATCPT is out of breath (free tier limit). Try again in a minute." },
+      { status: 429 }
     );
   }
+  return NextResponse.json(
+    { error: "The AI service had a problem. Try again." },
+    { status: 502 }
+  );
 }
